@@ -325,6 +325,7 @@ public class MainActivity extends Activity {
             Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
             
             // Inject message into webpage chat
+            final String finalFileName = fileName;
             String injectJs = String.format(
                 "(function() { " +
                 "  var isImage = '%s'.startsWith('image/'); " +
@@ -335,18 +336,18 @@ public class MainActivity extends Activity {
                 "  if (el) { " +
                 "    el.dataset.fileName = '%s'; " +
                 "    el.dataset.pending = 'false'; " +
-                "    el.querySelector('.bubble').innerHTML += ' <span style="color:#4caf50">✓</span>'; " +
+                "    el.querySelector('.bubble').innerHTML += ' <span style=\"color:#4caf50\">OK</span>'; " +
                 "    if (!isImage && !isVideo) { " +
                 "      var fileCard = document.createElement('div'); " +
                 "      fileCard.className = 'file-card'; " +
-                "      fileCard.innerHTML = '<span class="file-icon">📄</span><div class="file-info"><span class="file-name">%s</span></div>'; " +
+                "      fileCard.innerHTML = '<span class=\"file-icon\">F</span><div class=\"file-info\"><span class=\"file-name\">%s</span></div>'; " +
                 "      el.querySelector('.bubble').appendChild(fileCard); " +
                 "    } " +
                 "    document.getElementById('chat-box').appendChild(el); " +
                 "    scrollToBottom(); " +
                 "  } " +
                 "})();",
-                mimeType, mimeType, fileName, fileName, fileName
+                mimeType, mimeType, finalFileName, finalFileName, finalFileName
             );
             
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
