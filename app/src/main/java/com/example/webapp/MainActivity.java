@@ -8,12 +8,14 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ProgressBar;
 import android.webkit.ValueCallback;
+import android.widget.Toast;
 
 public class MainActivity extends Activity {
     private WebView webView;
@@ -46,6 +48,9 @@ public class MainActivity extends Activity {
     }
 
     private void setupWebView() {
+        // Add JavaScript interface for file upload
+        webView.addJavascriptInterface(new FileUploadInterface(), "AndroidFileUpload");
+
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
@@ -58,6 +63,9 @@ public class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 if (progressBar != null) progressBar.setVisibility(ProgressBar.GONE);
                 prefs.edit().putString(KEY_URL, url).apply();
+                
+                // Inject JavaScript to handle file inputs
+                injectFileInputHandler();
             }
         });
 
@@ -73,17 +81,17 @@ public class MainActivity extends Activity {
                 }
             }
 
-            // Android 3.0 - 4.0
+            // For Android 3.0+
             public void openFileChooser(ValueCallback<Uri> uploadMsg) {
                 openFileChooser(uploadMsg, null, null);
             }
 
-            // Android 4.0 - 4.1
+            // For Android 4.0+
             public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType) {
                 openFileChooser(uploadMsg, acceptType, null);
             }
 
-            // Android 4.1+
+            // For Android 4.1+
             public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType, String capture) {
                 mUploadMessage = uploadMsg;
                 Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
@@ -101,6 +109,65 @@ public class MainActivity extends Activity {
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
         settings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
+        settings.setAllowFileAccess(true);
+    }
+
+    private void injectFileInputHandler() {
+        String script = """
+            (function() {
+                // Override file input click to use Android picker
+                var observer = new MutationObserver(function() {
+                    document.querySelectorAll('input[type=file]').forEach(function(input) {
+                        if (!input.hasAttribute('data-android-handled')) {
+                            input.setAttribute('data-android-handled', 'true');
+                            input.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                if (window.AndroidFileUpload) {
+                                    window.AndroidFileUpload.openFileChooser();
+                                }
+                            });
+                        }
+                    });
+                });
+                
+                observer.observe(document.body, { childList: true, subtree: true });
+                
+                // Initial scan
+                document.querySelectorAll('input[type=file]').forEach(function(input) {
+                    if (!input.hasAttribute('data-android-handled')) {
+                        input.setAttribute('data-android-handled', 'true');
+                        input.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            if (window.AndroidFileUpload) {
+                                window.AndroidFileUpload.openFileChooser();
+                            }
+                        });
+                    }
+                });
+            })();
+            """;
+        
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+            webView.evaluateJavascript(script, null);
+        } else {
+            webView.loadUrl("javascript:" + script);
+        }
+    }
+
+    public class FileUploadInterface {
+        @JavascriptInterface
+        public void openFileChooser() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    mUploadMessage = null;
+                    Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    startActivityForResult(Intent.createChooser(intent, "选择文件"), FILE_CHOOSER_REQUEST_CODE);
+                }
+            });
+        }
     }
 
     @Override
