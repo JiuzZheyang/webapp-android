@@ -13,17 +13,17 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="网页地址"
+            android:text="局域网地址"
             android:textSize="16sp"
             android:textColor="#333"
             android:textStyle="bold"
             android:layout_marginBottom="8dp" />
 
         <EditText
-            android:id="@+id/editUrl"
+            android:id="@+id/editLanUrl"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="例如：http://192.168.1.121:12345/"
+            android:hint="例如：192.168.1.121:12345"
             android:inputType="textUri"
             android:singleLine="true"
             android:padding="12dp"
@@ -33,7 +33,36 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="每次打开 App 会自动加载此网址"
+            android:text="当前网络在局域网内时使用此地址"
+            android:textSize="12sp"
+            android:textColor="#888"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="24dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="公网地址"
+            android:textSize="16sp"
+            android:textColor="#333"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/editPublicUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="例如：your-server.com:12345"
+            android:inputType="textUri"
+            android:singleLine="true"
+            android:padding="12dp"
+            android:background="@android:drawable/edit_text"
+            android:textSize="16sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="远程访问时使用此地址（需配置 frp 穿透）"
             android:textSize="12sp"
             android:textColor="#888"
             android:layout_marginTop="4dp"

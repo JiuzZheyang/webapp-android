@@ -37,8 +37,10 @@ public class MainActivity extends Activity {
     private ProgressBar progressBar;
     private SharedPreferences prefs;
     private static final String PREFS_NAME = "WebAppPrefs";
-    private static final String KEY_URL = "web_url";
-    private static final String DEFAULT_URL = "http://192.168.1.121:12345/";
+    private static final String KEY_LAN_URL = "lan_url";
+    private static final String KEY_PUBLIC_URL = "public_url";
+    private static final String DEFAULT_LAN_URL = "192.168.1.121:12345";
+    private static final String DEFAULT_PUBLIC_URL = "";
     private static final String STATE_FILE = "webview_state.dat";
     private static final int REQUEST_FILE = 100;
     private static final int CHUNK_SIZE = 512 * 1024; // 512KB
@@ -60,19 +62,75 @@ public class MainActivity extends Activity {
 
         setupWebView();
 
-        // Restore WebView state from file
-        WebViewState state = loadWebViewState();
-        if (state != null) {
-            String url = state.url;
-            webView.restoreState(new Bundle());
-            webView.loadUrl(url);
-            // Restore scroll position after page loads
-            final int scrollY = state.scrollY;
-            webView.evaluateJavascript("window.scrollTo(0, " + scrollY + ");", null);
-        } else {
-            String url = prefs.getString(KEY_URL, DEFAULT_URL);
-            webView.loadUrl(url);
-        }
+        // Detect network and load appropriate URL
+        detectAndLoadUrl();
+    }
+
+    private void detectAndLoadUrl() {
+        new AsyncTask<Void, Void, String>() {
+            @Override
+            protected String doInBackground(Void... voids) {
+                String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
+
+                // Try LAN first
+                if (!lanUrl.isEmpty()) {
+                    String testUrl = "http://" + lanUrl + "/";
+                    if (isHostReachable(lanUrl, 500)) {
+                        return testUrl;
+                    }
+                }
+
+                // Try public URL
+                if (!publicUrl.isEmpty()) {
+                    String testUrl = "http://" + publicUrl;
+                    if (!testUrl.endsWith("/")) testUrl += "/";
+                    if (isHostReachable(publicUrl, 500)) {
+                        return testUrl;
+                    }
+                }
+
+                // Return LAN as fallback
+                return "http://" + lanUrl + "/";
+            }
+
+            @Override
+            protected void onPostExecute(String url) {
+                // Restore WebView state from file
+                WebViewState state = loadWebViewState();
+                if (state != null) {
+                    webView.restoreState(new Bundle());
+                    webView.loadUrl(state.url);
+                    final int scrollY = state.scrollY;
+                    webView.evaluateJavascript("window.scrollTo(0, " + scrollY + ");", null);
+                } else {
+                    webView.loadUrl(url);
+                }
+            }
+
+            private boolean isHostReachable(String hostPort, int timeoutMs) {
+                try {
+                    String[] parts = hostPort.split(":");
+                    String host = parts[0];
+                    int port = parts.length > 1 ? Integer.parseInt(parts[1]) : 80;
+                    java.net.InetAddress ia = java.net.InetAddress.getByName(host);
+                    return ia.isReachable(timeoutMs) || isPortReachable(host, port, timeoutMs);
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+
+            private boolean isPortReachable(String host, int port, int timeoutMs) {
+                try {
+                    java.net.Socket socket = new java.net.Socket();
+                    socket.connect(new java.net.InetSocketAddress(host, port), timeoutMs);
+                    socket.close();
+                    return true;
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+        }.execute();
     }
 
     private void setupWebView() {
@@ -102,7 +160,6 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 if (progressBar != null) progressBar.setVisibility(ProgressBar.GONE);
-                prefs.edit().putString(KEY_URL, url).apply();
                 injectFilePicker();
             }
         });
@@ -235,9 +292,9 @@ public class MainActivity extends Activity {
         @Override
         protected String doInBackground(Void... voids) {
             try {
-                // Get base URL from current webview
-                String baseUrl = prefs.getString(KEY_URL, DEFAULT_URL);
-                String uploadUrl = baseUrl.replace("/#", "") + "upload-chunk";
+                // Get base URL from settings (prefer LAN for upload)
+                String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                String uploadUrl = "http://" + lanUrl + "/upload-chunk";
 
                 // Get file size
                 InputStream inputStream = getContentResolver().openInputStream(fileUri);
@@ -504,8 +561,8 @@ public class MainActivity extends Activity {
             webView.reload();
             return true;
         } else if (id == R.id.action_home) {
-            String url = prefs.getString(KEY_URL, DEFAULT_URL);
-            webView.loadUrl(url);
+            // Re-detect network and load appropriate URL
+            detectAndLoadUrl();
             return true;
         }
         return super.onOptionsItemSelected(item);
