@@ -224,7 +224,7 @@ public class MainActivity extends Activity {
                     int idx = contentDisposition.indexOf("filename=");
                     if (idx >= 0) {
                         fileName = contentDisposition.substring(idx + 9);
-                        fileName = fileName.replaceAll("["']", "").trim();
+                        fileName = fileName.replaceAll("[\"']", "").trim();
                     }
                 }
                 if (fileName == null || fileName.isEmpty() || fileName.equals("download")) {
