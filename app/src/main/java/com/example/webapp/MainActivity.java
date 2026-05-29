@@ -4,6 +4,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -12,6 +13,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ProgressBar;
+import android.webkit.ValueCallback;
 
 public class MainActivity extends AppCompatActivity {
     private WebView webView;
@@ -20,6 +22,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String PREFS_NAME = "WebAppPrefs";
     private static final String KEY_URL = "web_url";
     private static final String DEFAULT_URL = "http://192.168.1.121:12345/";
+    private static final int REQUEST_FILE_PICKER = 1;
+    private ValueCallback<Uri[]> filePathCallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -33,7 +37,6 @@ public class MainActivity extends AppCompatActivity {
 
         setupWebView();
 
-        // Restore state or load URL
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
@@ -69,6 +72,37 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             }
+
+            // For Android 5.0+
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                if (MainActivity.this.filePathCallback != null) {
+                    MainActivity.this.filePathCallback.onReceiveValue(null);
+                }
+                MainActivity.this.filePathCallback = filePathCallback;
+
+                Intent intent = fileChooserParams.createIntent();
+                try {
+                    startActivityForResult(intent, REQUEST_FILE_PICKER);
+                } catch (Exception e) {
+                    filePathCallback.onReceiveValue(null);
+                    filePathCallback = null;
+                }
+                return true;
+            }
+
+            // For Android < 5.0
+            public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType, String capture) {
+                if (filePathCallback != null) {
+                    filePathCallback.onReceiveValue(null);
+                }
+                filePathCallback = null;
+
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                startActivityForResult(Intent.createChooser(intent, "选择文件"), REQUEST_FILE_PICKER);
+            }
         });
 
         WebSettings settings = webView.getSettings();
@@ -79,6 +113,24 @@ public class MainActivity extends AppCompatActivity {
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
         settings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_FILE_PICKER) {
+            if (filePathCallback == null) return;
+
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && data != null) {
+                String dataString = data.getDataString();
+                if (dataString != null) {
+                    results = new Uri[]{Uri.parse(dataString)};
+                }
+            }
+            filePathCallback.onReceiveValue(results);
+            filePathCallback = null;
+        }
     }
 
     @Override
