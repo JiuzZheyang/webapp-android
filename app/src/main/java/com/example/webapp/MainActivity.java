@@ -434,7 +434,6 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         // Save WebView state before leaving
-        webView.saveWebViewState();
         saveWebViewState(webView.getUrl(), 0);
         CookieSyncManager.getInstance().sync();
     }
