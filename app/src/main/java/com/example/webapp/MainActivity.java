@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.net.Uri;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.webkit.JavascriptInterface;
@@ -73,43 +75,47 @@ public class MainActivity extends Activity {
                 String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
                 String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
 
-                // Try LAN first
-                if (!lanUrl.isEmpty()) {
-                    String testUrl = "http://" + lanUrl + "/";
-                    if (isHostReachable(lanUrl, 500)) {
-                        return testUrl;
-                    }
-                }
+                // Check current network type
+                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+                NetworkInfo activeNet = cm.getActiveNetworkInfo();
+                boolean isWifi = activeNet != null && activeNet.getType() == ConnectivityManager.TYPE_WIFI;
 
-                // Try public URL
-                if (!publicUrl.isEmpty()) {
-                    String testUrl = "http://" + publicUrl;
-                    if (!testUrl.endsWith("/")) testUrl += "/";
-                    if (isHostReachable(publicUrl, 500)) {
-                        return testUrl;
+                if (isWifi) {
+                    // On WiFi: try LAN first, then public
+                    if (!lanUrl.isEmpty() && isPortReachable(lanUrl.split(":")[0], lanUrl.contains(":") ? Integer.parseInt(lanUrl.split(":")[1]) : 80, 500)) {
+                        return "http://" + lanUrl;
                     }
+                    if (!publicUrl.isEmpty() && isPortReachable(publicUrl.split(":")[0], publicUrl.contains(":") ? Integer.parseInt(publicUrl.split(":")[1]) : 80, 500)) {
+                        String url = "http://" + publicUrl;
+                        if (!url.endsWith("/")) url += "/";
+                        return url;
+                    }
+                    // LAN not reachable, use it anyway (will show error in WebView)
+                    return "http://" + lanUrl;
+                } else {
+                    // Not WiFi (mobile/other): try public first, then LAN
+                    if (!publicUrl.isEmpty() && isPortReachable(publicUrl.split(":")[0], publicUrl.contains(":") ? Integer.parseInt(publicUrl.split(":")[1]) : 80, 500)) {
+                        String url = "http://" + publicUrl;
+                        if (!url.endsWith("/")) url += "/";
+                        return url;
+                    }
+                    if (!lanUrl.isEmpty() && isPortReachable(lanUrl.split(":")[0], lanUrl.contains(":") ? Integer.parseInt(lanUrl.split(":")[1]) : 80, 500)) {
+                        return "http://" + lanUrl;
+                    }
+                    // Nothing reachable, try public if configured
+                    if (!publicUrl.isEmpty()) {
+                        String url = "http://" + publicUrl;
+                        if (!url.endsWith("/")) url += "/";
+                        return url;
+                    }
+                    return "http://" + lanUrl;
                 }
-
-                // Return LAN as fallback
-                return "http://" + lanUrl + "/";
             }
 
             @Override
             protected void onPostExecute(String url) {
-                // Use detected URL, no state restoration to avoid stale URLs
+                if (!url.endsWith("/")) url += "/";
                 webView.loadUrl(url);
-            }
-
-            private boolean isHostReachable(String hostPort, int timeoutMs) {
-                try {
-                    String[] parts = hostPort.split(":");
-                    String host = parts[0];
-                    int port = parts.length > 1 ? Integer.parseInt(parts[1]) : 80;
-                    java.net.InetAddress ia = java.net.InetAddress.getByName(host);
-                    return ia.isReachable(timeoutMs) || isPortReachable(host, port, timeoutMs);
-                } catch (Exception e) {
-                    return false;
-                }
             }
 
             private boolean isPortReachable(String host, int port, int timeoutMs) {
@@ -313,20 +319,48 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
+                    // Validate and fix URL
+                    if (url == null || url.trim().isEmpty()) {
+                        Toast.makeText(MainActivity.this, "无效的下载链接", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    // Skip blob/data URLs - these need different handling
+                    if (url.startsWith("blob:") || url.startsWith("data:")) {
+                        Toast.makeText(MainActivity.this, "此类型下载暂不支持，请在网页中长按保存", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    // Make absolute
+                    if (url.startsWith("//")) {
+                        url = "https:" + url;
+                    } else if (url.startsWith("/")) {
+                        String base = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                        url = base + url;
+                    } else if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                        url = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL) + "/" + url;
+                    }
+                    final String finalUrl = url;
+                    final String finalName = (fileName != null && !fileName.isEmpty()) ? fileName : "download_file";
+                    // Use DownloadManager for reliable download
                     try {
                         android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-                        android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(Uri.parse(url));
-                        req.setTitle(fileName);
+                        android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(Uri.parse(finalUrl));
+                        req.setTitle(finalName);
                         req.setDescription("终端传输 - 接收文件");
                         if (mimeType != null && !mimeType.isEmpty()) {
                             req.setMimeType(mimeType);
                         }
                         req.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                        req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName);
+                        req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, finalName);
                         dm.enqueue(req);
-                        Toast.makeText(MainActivity.this, "开始下载: " + fileName, Toast.LENGTH_SHORT).show();
+                        Toast.makeText(MainActivity.this, "开始下载: " + finalName, Toast.LENGTH_SHORT).show();
                     } catch (Exception e) {
-                        Toast.makeText(MainActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                        // Fallback: try intent-based download
+                        try {
+                            android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(finalUrl));
+                            startActivity(intent);
+                        } catch (Exception e2) {
+                            Toast.makeText(MainActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                        }
                     }
                 }
             });
