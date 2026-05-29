@@ -8,7 +8,6 @@ import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Bundle;
-import android.preference.PreferenceManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -18,10 +17,15 @@ import android.widget.ProgressBar;
 import android.webkit.ValueCallback;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.webkit.CookieSyncManager;
 import android.widget.Toast;
 
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.UUID;
@@ -33,6 +37,7 @@ public class MainActivity extends Activity {
     private static final String PREFS_NAME = "WebAppPrefs";
     private static final String KEY_URL = "web_url";
     private static final String DEFAULT_URL = "http://192.168.1.121:12345/";
+    private static final String STATE_FILE = "webview_state.dat";
     private static final int REQUEST_FILE = 100;
     private static final int CHUNK_SIZE = 512 * 1024; // 512KB
     private ValueCallback<Uri> mUploadMessage;
@@ -53,8 +58,15 @@ public class MainActivity extends Activity {
 
         setupWebView();
 
-        if (savedInstanceState != null) {
-            webView.restoreState(savedInstanceState);
+        // Restore WebView state from file
+        WebViewState state = loadWebViewState();
+        if (state != null) {
+            String url = state.url;
+            webView.restoreState(new Bundle());
+            webView.loadUrl(url);
+            // Restore scroll position after page loads
+            final int scrollY = state.scrollY;
+            webView.evaluateJavascript("window.scrollTo(0, " + scrollY + ");", null);
         } else {
             String url = prefs.getString(KEY_URL, DEFAULT_URL);
             webView.loadUrl(url);
@@ -140,6 +152,9 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
+        settings.setDatabaseEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabasePath(getFilesDir().getPath() + "/webview/");
     }
 
     private void injectFilePicker() {
@@ -148,8 +163,6 @@ public class MainActivity extends Activity {
             "  document.querySelectorAll('input[type=file]').forEach(function(input) {" +
             "    if (!input.dataset.androidReady) {" +
             "      input.dataset.androidReady = 'true';" +
-            "      input.style.display = 'block';" +
-            "      input.removeAttribute('multiple');" +
             "      input.addEventListener('click', function(e) {" +
             "        e.preventDefault();" +
             "        e.stopPropagation();" +
@@ -416,15 +429,52 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    protected void onSaveInstanceState(Bundle outState) {
-        super.onSaveInstanceState(outState);
-        webView.saveState(outState);
+    protected void onPause() {
+        super.onPause();
+        // Save WebView state before leaving
+        webView.saveWebViewState();
+        saveWebViewState(webView.getUrl(), 0);
+        CookieSyncManager.getInstance().sync();
     }
 
     @Override
-    protected void onRestoreInstanceState(Bundle savedInstanceState) {
-        super.onRestoreInstanceState(savedInstanceState);
-        webView.restoreState(savedInstanceState);
+    protected void onResume() {
+        super.onResume();
+        CookieSyncManager.getInstance().startSync();
+    }
+
+    private void saveWebViewState(String url, int scrollY) {
+        try {
+            WebViewState state = new WebViewState();
+            state.url = url;
+            state.scrollY = scrollY;
+            File file = new File(getFilesDir(), STATE_FILE);
+            ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(file));
+            out.writeObject(state);
+            out.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private WebViewState loadWebViewState() {
+        try {
+            File file = new File(getFilesDir(), STATE_FILE);
+            if (!file.exists()) return null;
+            ObjectInputStream in = new ObjectInputStream(new FileInputStream(file));
+            WebViewState state = (WebViewState) in.readObject();
+            in.close();
+            return state;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    private static class WebViewState implements Serializable {
+        private static final long serialVersionUID = 1L;
+        String url;
+        int scrollY;
     }
 
     @Override
