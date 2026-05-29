@@ -96,16 +96,8 @@ public class MainActivity extends Activity {
 
             @Override
             protected void onPostExecute(String url) {
-                // Restore WebView state from file
-                WebViewState state = loadWebViewState();
-                if (state != null) {
-                    webView.restoreState(new Bundle());
-                    webView.loadUrl(state.url);
-                    final int scrollY = state.scrollY;
-                    webView.evaluateJavascript("window.scrollTo(0, " + scrollY + ");", null);
-                } else {
-                    webView.loadUrl(url);
-                }
+                // Use detected URL, no state restoration to avoid stale URLs
+                webView.loadUrl(url);
             }
 
             private boolean isHostReachable(String hostPort, int timeoutMs) {
@@ -265,6 +257,18 @@ public class MainActivity extends Activity {
             "}" +
             "setupFileInputs();" +
             "setInterval(setupFileInputs, 1000);" +
+            "" +
+            "  // Intercept download links" +
+            "  document.addEventListener('click', function(e) {" +
+            "    var a = e.target.closest('a');" +
+            "    if (a && a.href && a.href.match(/\\.(pdf|zip|doc|docx|xls|xlsx|ppt|pptx|txt|jpg|jpeg|png|gif|mp3|mp4|avi|mkv|apk)$/i)) {" +
+            "      e.preventDefault();" +
+            "      e.stopPropagation();" +
+            "      var fileName = a.download || a.href.split('/').pop();" +
+            "      window.Android.downloadFile(a.href, fileName, '');" +
+            "      return false;" +
+            "    }" +
+            "  });" +
             "})();";
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
