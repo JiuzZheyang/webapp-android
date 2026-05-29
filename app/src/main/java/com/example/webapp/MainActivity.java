@@ -214,6 +214,38 @@ public class MainActivity extends Activity {
         settings.setDatabaseEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabasePath(getFilesDir().getPath() + "/webview/");
+
+        // Handle downloads via Android DownloadManager
+        webView.setDownloadListener(new android.webkit.DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
+                String fileName = "download";
+                if (contentDisposition != null) {
+                    int idx = contentDisposition.indexOf("filename=");
+                    if (idx >= 0) {
+                        fileName = contentDisposition.substring(idx + 9);
+                        fileName = fileName.replaceAll("["']", "").trim();
+                    }
+                }
+                if (fileName == null || fileName.isEmpty() || fileName.equals("download")) {
+                    int slashIdx = url.lastIndexOf("/");
+                    fileName = (slashIdx >= 0) ? url.substring(slashIdx + 1) : "download";
+                }
+                try {
+                    android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                    android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(Uri.parse(url));
+                    req.setTitle(fileName);
+                    req.setDescription("终端传输 - 接收文件");
+                    if (mimeType != null && !mimeType.isEmpty()) req.setMimeType(mimeType);
+                    req.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                    req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName);
+                    dm.enqueue(req);
+                    Toast.makeText(MainActivity.this, "开始下载: " + fileName, Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
     }
 
     private void injectFilePicker() {
@@ -268,6 +300,30 @@ public class MainActivity extends Activity {
                 public void run() {
                     Uri uri = Uri.parse(uriStr);
                     new ChunkedUploadTask(uri, fileName, mimeType, deviceId, deviceName).execute();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void downloadFile(String url, String fileName, String mimeType) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
+                        android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(Uri.parse(url));
+                        req.setTitle(fileName);
+                        req.setDescription("终端传输 - 接收文件");
+                        if (mimeType != null && !mimeType.isEmpty()) {
+                            req.setMimeType(mimeType);
+                        }
+                        req.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+                        req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName);
+                        dm.enqueue(req);
+                        Toast.makeText(MainActivity.this, "开始下载: " + fileName, Toast.LENGTH_SHORT).show();
+                    } catch (Exception e) {
+                        Toast.makeText(MainActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                    }
                 }
             });
         }
