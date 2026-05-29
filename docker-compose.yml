@@ -1,0 +1,8 @@
+version: '3'
+services:
+  build:
+    image: gradle:8.5-jdk17
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: gradle assembleDebug --no-daemon
