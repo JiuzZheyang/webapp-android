@@ -324,8 +324,36 @@ public class MainActivity extends Activity {
             super.onPostExecute(result);
             Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
             
-            // Reload webview to show uploaded file
-            webView.reload();
+            // Inject message into webpage chat
+            String injectJs = String.format(
+                "(function() { " +
+                "  var isImage = '%s'.startsWith('image/'); " +
+                "  var isVideo = '%s'.startsWith('video/'); " +
+                "  var msgType = isVideo ? 'video' : (isImage ? 'image' : 'file'); " +
+                "  var previewUrl = (isImage || isVideo) ? URL.createObjectURL(new Blob([new ArrayBuffer(1)])) : '%s'; " +
+                "  var el = createMessageElement('sent', previewUrl, 'You', msgType, undefined); " +
+                "  if (el) { " +
+                "    el.dataset.fileName = '%s'; " +
+                "    el.dataset.pending = 'false'; " +
+                "    el.querySelector('.bubble').innerHTML += ' <span style="color:#4caf50">✓</span>'; " +
+                "    if (!isImage && !isVideo) { " +
+                "      var fileCard = document.createElement('div'); " +
+                "      fileCard.className = 'file-card'; " +
+                "      fileCard.innerHTML = '<span class="file-icon">📄</span><div class="file-info"><span class="file-name">%s</span></div>'; " +
+                "      el.querySelector('.bubble').appendChild(fileCard); " +
+                "    } " +
+                "    document.getElementById('chat-box').appendChild(el); " +
+                "    scrollToBottom(); " +
+                "  } " +
+                "})();",
+                mimeType, mimeType, fileName, fileName, fileName
+            );
+            
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+                webView.evaluateJavascript(injectJs, null);
+            } else {
+                webView.loadUrl("javascript:" + injectJs);
+            }
         }
     }
 
