@@ -8,6 +8,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -46,6 +47,8 @@ public class MainActivity extends Activity {
     }
 
     private void setupWebView() {
+        webView.addJavascriptInterface(new AndroidBridge(), "Android");
+
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
@@ -58,6 +61,7 @@ public class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 if (progressBar != null) progressBar.setVisibility(ProgressBar.GONE);
                 prefs.edit().putString(KEY_URL, url).apply();
+                injectFilePicker();
             }
         });
 
@@ -73,7 +77,6 @@ public class MainActivity extends Activity {
                 }
             }
 
-            // Android 2.2 - 3.0
             public void openFileChooser(ValueCallback<Uri> uploadMsg) {
                 mUploadMessage = uploadMsg;
                 Intent i = new Intent(Intent.ACTION_GET_CONTENT);
@@ -82,7 +85,6 @@ public class MainActivity extends Activity {
                 startActivityForResult(Intent.createChooser(i, "选择文件"), REQUEST_FILE);
             }
 
-            // Android 4.0 - 4.1
             public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType) {
                 mUploadMessage = uploadMsg;
                 Intent i = new Intent(Intent.ACTION_GET_CONTENT);
@@ -91,7 +93,6 @@ public class MainActivity extends Activity {
                 startActivityForResult(Intent.createChooser(i, "选择文件"), REQUEST_FILE);
             }
 
-            // Android 4.1 - 4.4
             public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType, String capture) {
                 mUploadMessage = uploadMsg;
                 Intent i = new Intent(Intent.ACTION_GET_CONTENT);
@@ -111,6 +112,49 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
+    }
+
+    private void injectFilePicker() {
+        String js = "(function() {" +
+            "function setupFileInputs() {" +
+            "  document.querySelectorAll('input[type=file]').forEach(function(input) {" +
+            "    if (!input.dataset.androidReady) {" +
+            "      input.dataset.androidReady = 'true';" +
+            "      input.style.display = 'block';" +
+            "      input.addEventListener('click', function(e) {" +
+            "        e.preventDefault();" +
+            "        e.stopPropagation();" +
+            "        window.Android.pickFile();" +
+            "        return false;" +
+            "      });" +
+            "    }" +
+            "  });" +
+            "}" +
+            "setupFileInputs();" +
+            "setInterval(setupFileInputs, 1000);" +
+            "})();";
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
+            webView.evaluateJavascript(js, null);
+        } else {
+            webView.loadUrl("javascript:" + js);
+        }
+    }
+
+    class AndroidBridge {
+        @JavascriptInterface
+        public void pickFile() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    mUploadMessage = null;
+                    Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("*/*");
+                    startActivityForResult(Intent.createChooser(i, "选择文件"), REQUEST_FILE);
+                }
+            });
+        }
     }
 
     @Override
