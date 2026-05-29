@@ -113,39 +113,26 @@ public class MainActivity extends Activity {
     }
 
     private void injectFileInputHandler() {
-        String script = """
-            (function() {
-                // Override file input click to use Android picker
-                var observer = new MutationObserver(function() {
-                    document.querySelectorAll('input[type=file]').forEach(function(input) {
-                        if (!input.hasAttribute('data-android-handled')) {
-                            input.setAttribute('data-android-handled', 'true');
-                            input.addEventListener('click', function(e) {
-                                e.preventDefault();
-                                if (window.AndroidFileUpload) {
-                                    window.AndroidFileUpload.openFileChooser();
-                                }
-                            });
-                        }
-                    });
-                });
-                
-                observer.observe(document.body, { childList: true, subtree: true });
-                
-                // Initial scan
-                document.querySelectorAll('input[type=file]').forEach(function(input) {
-                    if (!input.hasAttribute('data-android-handled')) {
-                        input.setAttribute('data-android-handled', 'true');
-                        input.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            if (window.AndroidFileUpload) {
-                                window.AndroidFileUpload.openFileChooser();
-                            }
-                        });
-                    }
-                });
-            })();
-            """;
+        String script = "(function() { " +
+            "var observer = new MutationObserver(function() { " +
+            "document.querySelectorAll('input[type=file]').forEach(function(input) { " +
+            "if (!input.hasAttribute('data-android-handled')) { " +
+            "input.setAttribute('data-android-handled', 'true'); " +
+            "input.addEventListener('click', function(e) { " +
+            "e.preventDefault(); " +
+            "if (window.AndroidFileUpload) { window.AndroidFileUpload.openFileChooser(); } " +
+            "}); " +
+            "} }); }); " +
+            "observer.observe(document.body, { childList: true, subtree: true }); " +
+            "document.querySelectorAll('input[type=file]').forEach(function(input) { " +
+            "if (!input.hasAttribute('data-android-handled')) { " +
+            "input.setAttribute('data-android-handled', 'true'); " +
+            "input.addEventListener('click', function(e) { " +
+            "e.preventDefault(); " +
+            "if (window.AndroidFileUpload) { window.AndroidFileUpload.openFileChooser(); } " +
+            "}); " +
+            "} }); " +
+            "})();";
         
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
             webView.evaluateJavascript(script, null);
