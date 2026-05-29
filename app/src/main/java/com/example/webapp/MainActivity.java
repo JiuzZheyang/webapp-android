@@ -329,16 +329,17 @@ public class MainActivity extends Activity {
                         Toast.makeText(MainActivity.this, "此类型下载暂不支持，请在网页中长按保存", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    // Make absolute
-                    if (url.startsWith("//")) {
-                        url = "https:" + url;
-                    } else if (url.startsWith("/")) {
+                    // Make absolute - use separate variable to avoid reassigning parameter
+                    String absUrl = url;
+                    if (absUrl.startsWith("//")) {
+                        absUrl = "https:" + absUrl;
+                    } else if (absUrl.startsWith("/")) {
                         String base = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-                        url = base + url;
-                    } else if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                        url = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL) + "/" + url;
+                        absUrl = base + absUrl;
+                    } else if (!absUrl.startsWith("http://") && !absUrl.startsWith("https://")) {
+                        absUrl = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL) + "/" + absUrl;
                     }
-                    final String finalUrl = url;
+                    final String finalUrl = absUrl;
                     final String finalName = (fileName != null && !fileName.isEmpty()) ? fileName : "download_file";
                     // Use DownloadManager for reliable download
                     try {
