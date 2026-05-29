@@ -1,6 +1,5 @@
 package com.example.webapp;
 
-import androidx.appcompat.app.AppCompatActivity;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -15,8 +14,6 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ProgressBar;
 import android.webkit.ValueCallback;
-import android.webkit.FileChooserParams;
-import android.os.Build;
 
 public class MainActivity extends Activity {
     private WebView webView;
@@ -27,7 +24,6 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_URL = "http://192.168.1.121:12345/";
     private static final int FILE_CHOOSER_REQUEST_CODE = 1001;
     private ValueCallback<Uri> mUploadMessage;
-    private ValueCallback<Uri[]> mFilePathCallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -77,19 +73,23 @@ public class MainActivity extends Activity {
                 }
             }
 
-            // Android 5.0+ (API 21+)
-            @SuppressWarnings("unused")
-            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
-                mFilePathCallback = filePathCallback;
+            // Android 3.0 - 4.0
+            public void openFileChooser(ValueCallback<Uri> uploadMsg) {
+                openFileChooser(uploadMsg, null, null);
+            }
 
+            // Android 4.0 - 4.1
+            public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType) {
+                openFileChooser(uploadMsg, acceptType, null);
+            }
+
+            // Android 4.1+
+            public void openFileChooser(ValueCallback<Uri> uploadMsg, String acceptType, String capture) {
+                mUploadMessage = uploadMsg;
                 Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
                 intent.addCategory(Intent.CATEGORY_OPENABLE);
                 intent.setType("*/*");
-
-                Intent chooser = Intent.createChooser(intent, "选择文件");
-                startActivityForResult(chooser, FILE_CHOOSER_REQUEST_CODE);
-
-                return true;
+                startActivityForResult(Intent.createChooser(intent, "选择文件"), FILE_CHOOSER_REQUEST_CODE);
             }
         });
 
@@ -108,34 +108,16 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
 
         if (requestCode == FILE_CHOOSER_REQUEST_CODE) {
-            if (mFilePathCallback == null && mUploadMessage == null) {
+            if (mUploadMessage == null) {
                 return;
             }
 
-            if (resultCode == Activity.RESULT_CANCELED) {
-                if (mFilePathCallback != null) {
-                    mFilePathCallback.onReceiveValue(null);
-                } else if (mUploadMessage != null) {
-                    mUploadMessage.onReceiveValue(null);
-                }
-            } else if (resultCode == Activity.RESULT_OK) {
-                Uri result = null;
-                if (data != null && data.getData() != null) {
-                    result = data.getData();
-                }
-
-                if (mFilePathCallback != null) {
-                    Uri[] results = null;
-                    if (result != null) {
-                        results = new Uri[]{result};
-                    }
-                    mFilePathCallback.onReceiveValue(results);
-                } else if (mUploadMessage != null) {
-                    mUploadMessage.onReceiveValue(result);
-                }
+            Uri result = null;
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                result = data.getData();
             }
 
-            mFilePathCallback = null;
+            mUploadMessage.onReceiveValue(result);
             mUploadMessage = null;
         }
     }
