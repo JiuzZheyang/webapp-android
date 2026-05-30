@@ -119,50 +119,30 @@ public class MainActivity extends Activity {
     }
 
     private void detectAndLoadUrl(boolean showToast) {
+        if (!isNetworkAvailable()) {
+            if (showToast) showToast("无网络连接，正在打开设置...");
+            openSettings();
+            return;
+        }
         final boolean finalShowToast = showToast;
         new AsyncTask<Void, Void, UrlResult>() {
             @Override
             protected UrlResult doInBackground(Void... voids) {
+                String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
+                boolean lanReach = false;
+                boolean pubReach = false;
                 try {
-                    String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-                    String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
-
-                    final AtomicBoolean lanReachable = new AtomicBoolean(false);
-                    final AtomicBoolean publicReachable = new AtomicBoolean(false);
                     String lanHost = getHost(lanUrl);
                     int lanPort = getPort(lanUrl);
+                    lanReach = pingHost(lanHost, lanPort, PING_TIMEOUT_LAN);
+                } catch (Throwable t) { lanReach = false; }
+                try {
                     String publicHost = getHost(publicUrl);
                     int publicPort = getPort(publicUrl);
-
-                    // Ping both LAN and public concurrently
-                    Thread lanThread = new Thread(() -> {
-                        try {
-                            lanReachable.set(pingHost(lanHost, lanPort, PING_TIMEOUT_LAN));
-                        } catch (Throwable t) { lanReachable.set(false); }
-                    });
-
-                    Thread publicThread = new Thread(() -> {
-                        try {
-                            publicReachable.set(pingHost(publicHost, publicPort, PING_TIMEOUT_PUBLIC));
-                        } catch (Throwable t) { publicReachable.set(false); }
-                    });
-
-                    lanThread.start();
-                    publicThread.start();
-
-                    // Wait for both with timeout
-                    try {
-                        lanThread.join(PING_TIMEOUT_LAN + 500);
-                        publicThread.join(PING_TIMEOUT_PUBLIC + 500);
-                    } catch (InterruptedException e) { }
-
-                    return new UrlResult(lanReachable.get(), publicReachable.get(), lanUrl, publicUrl);
-                } catch (Throwable t) {
-                    // Fallback: treat as unreachable
-                    String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-                    String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
-                    return new UrlResult(false, false, lanUrl, publicUrl);
-                }
+                    pubReach = pingHost(publicHost, publicPort, PING_TIMEOUT_PUBLIC);
+                } catch (Throwable t) { pubReach = false; }
+                return new UrlResult(lanReach, pubReach, lanUrl, publicUrl);
             }
 
             @Override
@@ -260,13 +240,22 @@ public class MainActivity extends Activity {
     }
 
     private boolean pingHost(String host, int port, int timeoutMs) {
-        if (host == null || host.isEmpty() || port <= 0) return false;
-        // 直接使用 Socket 连接检测，不走 HTTP 协议，避免重定向/代理问题
+        if (host == null || host.isEmpty()) return false;
         try {
-            Socket socket = new Socket();
-            socket.connect(new InetSocketAddress(host, port), timeoutMs);
-            socket.close();
-            return true;
+            // Use system ping command for reliability
+            int timeoutSec = Math.max(1, timeoutMs / 1000);
+            Process p = Runtime.getRuntime().exec("/system/bin/ping -c 1 -W " + timeoutSec + " " + host);
+            int ret = p.waitFor();
+            if (ret == 0) return true;
+            // Ping failed, try TCP socket as fallback
+            try {
+                Socket socket = new Socket();
+                socket.connect(new InetSocketAddress(host, port), timeoutMs);
+                socket.close();
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
         } catch (Exception e) {
             return false;
         }
