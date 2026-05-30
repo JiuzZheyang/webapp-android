@@ -39,6 +39,7 @@ import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URL;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.UUID;
 
 public class MainActivity extends Activity {
@@ -53,6 +54,8 @@ public class MainActivity extends Activity {
     private static final String STATE_FILE = "webview_state.dat";
     private static final int REQUEST_FILE = 100;
     private static final int CHUNK_SIZE = 512 * 1024;
+    private static final int PING_TIMEOUT_LAN = 1000;
+    private static final int PING_TIMEOUT_PUBLIC = 2000;
 
     private ValueCallback<Uri> mUploadMessage;
     private String pendingUploadFileName;
@@ -116,116 +119,155 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean isWifiConnected() {
-        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-        if (cm == null) return false;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Network network = cm.getActiveNetwork();
-            if (network == null) return false;
-            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
-            return caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
-        } else {
-            NetworkInfo activeNet = cm.getActiveNetworkInfo();
-            return activeNet != null && activeNet.getType() == ConnectivityManager.TYPE_WIFI && activeNet.isConnected();
+    private void detectAndLoadUrl() {
+        new AsyncTask<Void, Void, UrlResult>() {
+            @Override
+            protected UrlResult doInBackground(Void... voids) {
+                String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
+
+                boolean lanReachable = false;
+                boolean publicReachable = false;
+                String lanHost = getHost(lanUrl);
+                int lanPort = getPort(lanUrl);
+                String publicHost = getHost(publicUrl);
+                int publicPort = getPort(publicUrl);
+
+                // Ping both LAN and public concurrently using threads
+                final AtomicBoolean lanDone = new AtomicBoolean(false);
+                final AtomicBoolean publicDone = new AtomicBoolean(false);
+
+                Thread lanThread = new Thread(() -> {
+                    lanReachable = pingHost(lanHost, lanPort, PING_TIMEOUT_LAN);
+                    lanDone.set(true);
+                });
+
+                Thread publicThread = new Thread(() -> {
+                    publicReachable = pingHost(publicHost, publicPort, PING_TIMEOUT_PUBLIC);
+                    publicDone.set(true);
+                });
+
+                lanThread.start();
+                publicThread.start();
+
+                // Wait for both with timeout
+                try {
+                    lanThread.join(PING_TIMEOUT_LAN + 500);
+                    publicThread.join(PING_TIMEOUT_PUBLIC + 500);
+                } catch (InterruptedException e) { }
+
+                return new UrlResult(lanReachable, publicReachable, lanUrl, publicUrl);
+            }
+
+            @Override
+            protected void onPostExecute(UrlResult result) {
+                String targetUrl;
+                boolean usedPublic;
+
+                if (result.lanReachable && !result.publicReachable) {
+                    // Only LAN is reachable
+                    targetUrl = makeUrl(result.lanUrl);
+                    usedPublic = false;
+                    showToast("局域网可用");
+                } else if (!result.lanReachable && result.publicReachable) {
+                    // Only public is reachable
+                    targetUrl = makeUrl(result.publicUrl);
+                    usedPublic = true;
+                    showToast("公网可用");
+                } else if (result.lanReachable && result.publicReachable) {
+                    // Both reachable - prefer LAN
+                    targetUrl = makeUrl(result.lanUrl);
+                    usedPublic = false;
+                    showToast("局域网、公网均可用（使用局域网）");
+                } else {
+                    // Neither reachable - go to settings
+                    showToast("无法连接服务器，正在打开设置...");
+                    openSettings();
+                    return;
+                }
+
+                currentActiveUrl = targetUrl;
+                isCurrentUrlPublic = usedPublic;
+                webView.loadUrl(targetUrl);
+            }
+
+            private class UrlResult {
+                boolean lanReachable;
+                boolean publicReachable;
+                String lanUrl;
+                String publicUrl;
+
+                UrlResult(boolean lan, boolean pub, String lan, String pubUrl) {
+                    this.lanReachable = lan;
+                    this.publicReachable = pub;
+                    this.lanUrl = lan;
+                    this.publicUrl = pubUrl;
+                }
+            }
+        }.execute();
+    }
+
+    private void showToast(final String msg) {
+        runOnUiThread(() -> Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show());
+    }
+
+    private void openSettings() {
+        Intent intent = new Intent(this, SettingsActivity.class);
+        startActivity(intent);
+        finish();
+    }
+
+    private String makeUrl(String url) {
+        if (url == null || url.isEmpty()) return "http://" + DEFAULT_LAN_URL + "/";
+        if (!url.contains(":")) url = url + ":80";
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            url = "http://" + url;
+        }
+        if (!url.endsWith("/")) url += "/";
+        return url;
+    }
+
+    private String getHost(String url) {
+        if (url == null || url.isEmpty()) return "";
+        url = url.replace("http://", "").replace("https://", "");
+        return url.contains(":") ? url.split(":")[0] : url;
+    }
+
+    private int getPort(String url) {
+        if (url == null || url.isEmpty()) return 80;
+        url = url.replace("http://", "").replace("https://", "");
+        if (!url.contains(":")) return 80;
+        try {
+            return Integer.parseInt(url.split(":")[1].replace("/", ""));
+        } catch (Exception e) {
+            return 80;
         }
     }
 
-    private void detectAndLoadUrl() {
-        if (!isNetworkAvailable()) {
-            Toast.makeText(this, "无网络连接，尝试加载本地配置...", Toast.LENGTH_LONG).show();
-            currentActiveUrl = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-            if (!currentActiveUrl.endsWith("/")) currentActiveUrl += "/";
-            isCurrentUrlPublic = false;
-            webView.loadUrl(currentActiveUrl);
-            return;
-        }
-
-        new AsyncTask<Void, Void, String>() {
-            private boolean usedPublic = false;
-
-            @Override
-            protected String doInBackground(Void... voids) {
-                String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-                String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
-                boolean isWifi = isWifiConnected();
-
-                if (isWifi) {
-                    if (!lanUrl.isEmpty() && pingHost(getHost(lanUrl), getPort(lanUrl), 1000)) {
-                        return makeUrl(lanUrl);
-                    }
-                    if (!publicUrl.isEmpty() && pingHost(getHost(publicUrl), getPort(publicUrl), 1500)) {
-                        usedPublic = true;
-                        return makeUrl(publicUrl);
-                    }
-                    return makeUrl(lanUrl);
-                } else {
-                    if (!publicUrl.isEmpty() && pingHost(getHost(publicUrl), getPort(publicUrl), 1500)) {
-                        usedPublic = true;
-                        return makeUrl(publicUrl);
-                    }
-                    if (!lanUrl.isEmpty() && pingHost(getHost(lanUrl), getPort(lanUrl), 1000)) {
-                        return makeUrl(lanUrl);
-                    }
-                    if (!publicUrl.isEmpty()) {
-                        usedPublic = true;
-                        return makeUrl(publicUrl);
-                    }
-                    return makeUrl(lanUrl);
-                }
+    private boolean pingHost(String host, int port, int timeoutMs) {
+        if (host == null || host.isEmpty() || port <= 0) return false;
+        try {
+            // Try HTTP HEAD first
+            HttpURLConnection conn = (HttpURLConnection) new URL("http://" + host + ":" + port + "/").openConnection();
+            conn.setRequestMethod("HEAD");
+            conn.setConnectTimeout(timeoutMs);
+            conn.setReadTimeout(timeoutMs);
+            conn.setInstanceFollowRedirects(false);
+            try {
+                int responseCode = conn.getResponseCode();
+                conn.disconnect();
+                return responseCode >= 200 && responseCode < 500;
+            } catch (Exception e) {
+                conn.disconnect();
             }
-
-            private String makeUrl(String url) {
-                if (!url.endsWith("/")) url += "/";
-                return url;
-            }
-
-            private String getHost(String url) {
-                return url.contains(":") ? url.split(":")[0] : url;
-            }
-
-            private int getPort(String url) {
-                if (!url.contains(":")) return 80;
-                try { return Integer.parseInt(url.split(":")[1]); } catch (Exception e) { return 80; }
-            }
-
-            private boolean pingHost(String host, int port, int timeoutMs) {
-                try {
-                    HttpURLConnection conn = (HttpURLConnection) new URL("http://" + host + ":" + port + "/").openConnection();
-                    conn.setRequestMethod("HEAD");
-                    conn.setConnectTimeout(timeoutMs);
-                    conn.setReadTimeout(timeoutMs);
-                    conn.setInstanceFollowRedirects(false);
-                    try {
-                        int responseCode = conn.getResponseCode();
-                        conn.disconnect();
-                        return responseCode >= 200 && responseCode < 500;
-                    } catch (Exception e) {
-                        conn.disconnect();
-                    }
-                } catch (Exception e) { }
-                try {
-                    Socket socket = new Socket();
-                    socket.connect(new InetSocketAddress(host, port), timeoutMs);
-                    socket.close();
-                    return true;
-                } catch (Exception e) { return false; }
-            }
-
-            @Override
-            protected void onPostExecute(String url) {
-                if (!url.endsWith("/")) url += "/";
-                currentActiveUrl = url;
-                isCurrentUrlPublic = usedPublic;
-
-                if (!isFirstLoad) {
-                    String networkType = isWifiConnected() ? "WiFi" : "移动数据";
-                    String serverType = isCurrentUrlPublic ? "公网" : "局域网";
-                    Toast.makeText(MainActivity.this, "已切换到 " + networkType + " → " + serverType, Toast.LENGTH_SHORT).show();
-                }
-
-                webView.loadUrl(url);
-            }
-        }.execute();
+        } catch (Exception e) { }
+        // Fallback to socket test
+        try {
+            Socket socket = new Socket();
+            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+            socket.close();
+            return true;
+        } catch (Exception e) { return false; }
     }
 
     private void setupWebView() {
@@ -273,52 +315,18 @@ public class MainActivity extends Activity {
                         String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
                         String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
 
+                        // Try to switch to the other URL
                         if (!isCurrentUrlPublic && !publicUrl.isEmpty()) {
-                            if (pingHost(getHost(publicUrl), getPort(publicUrl), 1500)) {
+                            if (pingHost(getHost(publicUrl), getPort(publicUrl), PING_TIMEOUT_PUBLIC)) {
                                 return makeUrl(publicUrl) + "|public";
                             }
                         }
                         if (isCurrentUrlPublic && !lanUrl.isEmpty()) {
-                            if (pingHost(getHost(lanUrl), getPort(lanUrl), 1000)) {
+                            if (pingHost(getHost(lanUrl), getPort(lanUrl), PING_TIMEOUT_LAN)) {
                                 return makeUrl(lanUrl) + "|lan";
                             }
                         }
                         return null;
-                    }
-
-                    private String makeUrl(String url) {
-                        if (!url.endsWith("/")) url += "/";
-                        return url;
-                    }
-
-                    private String getHost(String url) {
-                        return url.contains(":") ? url.split(":")[0] : url;
-                    }
-
-                    private int getPort(String url) {
-                        if (!url.contains(":")) return 80;
-                        try { return Integer.parseInt(url.split(":")[1]); } catch (Exception e) { return 80; }
-                    }
-
-                    private boolean pingHost(String host, int port, int timeoutMs) {
-                        try {
-                            HttpURLConnection conn = (HttpURLConnection) new URL("http://" + host + ":" + port + "/").openConnection();
-                            conn.setRequestMethod("HEAD");
-                            conn.setConnectTimeout(timeoutMs);
-                            conn.setReadTimeout(timeoutMs);
-                            conn.setInstanceFollowRedirects(false);
-                            try {
-                                int responseCode = conn.getResponseCode();
-                                conn.disconnect();
-                                return responseCode >= 200 && responseCode < 500;
-                            } catch (Exception e) { conn.disconnect(); }
-                        } catch (Exception e) { }
-                        try {
-                            Socket socket = new Socket();
-                            socket.connect(new InetSocketAddress(host, port), timeoutMs);
-                            socket.close();
-                            return true;
-                        } catch (Exception e) { return false; }
                     }
 
                     @Override
@@ -330,7 +338,10 @@ public class MainActivity extends Activity {
                             currentActiveUrl = url;
                             isCurrentUrlPublic = wasPublic;
                             webView.loadUrl(url);
-                            Toast.makeText(MainActivity.this, "连接失败，自动切换到: " + (wasPublic ? "公网" : "局域网"), Toast.LENGTH_SHORT).show();
+                            showToast("连接失败，自动切换到: " + (wasPublic ? "公网" : "局域网"));
+                        } else {
+                            showToast("无法连接服务器，正在打开设置...");
+                            openSettings();
                         }
                     }
                 }.execute();
@@ -410,9 +421,9 @@ public class MainActivity extends Activity {
                     req.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
                     req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName);
                     dm.enqueue(req);
-                    Toast.makeText(MainActivity.this, "开始下载: " + fileName, Toast.LENGTH_SHORT).show();
+                    showToast("开始下载: " + fileName);
                 } catch (Exception e) {
-                    Toast.makeText(MainActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                    showToast("下载失败: " + e.getMessage());
                 }
             }
         });
@@ -490,11 +501,11 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     if (url == null || url.trim().isEmpty()) {
-                        Toast.makeText(MainActivity.this, "无效的下载链接", Toast.LENGTH_SHORT).show();
+                        showToast("无效的下载链接");
                         return;
                     }
                     if (url.startsWith("blob:") || url.startsWith("data:")) {
-                        Toast.makeText(MainActivity.this, "此类型下载暂不支持，请在网页中长按保存", Toast.LENGTH_LONG).show();
+                        showToast("此类型下载暂不支持，请在网页中长按保存");
                         return;
                     }
                     String absUrl = url;
@@ -518,13 +529,13 @@ public class MainActivity extends Activity {
                         req.setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
                         req.setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, finalName);
                         dm.enqueue(req);
-                        Toast.makeText(MainActivity.this, "开始下载: " + finalName, Toast.LENGTH_SHORT).show();
+                        showToast("开始下载: " + finalName);
                     } catch (Exception e) {
                         try {
                             android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(finalUrl));
                             startActivity(intent);
                         } catch (Exception e2) {
-                            Toast.makeText(MainActivity.this, "下载失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                            showToast("下载失败: " + e.getMessage());
                         }
                     }
                 }
@@ -642,13 +653,13 @@ public class MainActivity extends Activity {
         @Override
         protected void onProgressUpdate(Integer... values) {
             super.onProgressUpdate(values);
-            Toast.makeText(MainActivity.this, "上传进度: " + values[0] + "%", Toast.LENGTH_SHORT).show();
+            showToast("上传进度: " + values[0] + "%");
         }
 
         @Override
         protected void onPostExecute(String result) {
             super.onPostExecute(result);
-            Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
+            showToast(result);
 
             final String finalFileName = fileName;
             String injectJs = String.format(
