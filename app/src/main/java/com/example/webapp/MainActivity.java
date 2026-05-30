@@ -123,39 +123,51 @@ public class MainActivity extends Activity {
         new AsyncTask<Void, Void, UrlResult>() {
             @Override
             protected UrlResult doInBackground(Void... voids) {
-                String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-                String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
-
-                final AtomicBoolean lanReachable = new AtomicBoolean(false);
-                final AtomicBoolean publicReachable = new AtomicBoolean(false);
-                String lanHost = getHost(lanUrl);
-                int lanPort = getPort(lanUrl);
-                String publicHost = getHost(publicUrl);
-                int publicPort = getPort(publicUrl);
-
-                // Ping both LAN and public concurrently using threads
-                Thread lanThread = new Thread(() -> {
-                    lanReachable.set(pingHost(lanHost, lanPort, PING_TIMEOUT_LAN));
-                });
-
-                Thread publicThread = new Thread(() -> {
-                    publicReachable.set(pingHost(publicHost, publicPort, PING_TIMEOUT_PUBLIC));
-                });
-
-                lanThread.start();
-                publicThread.start();
-
-                // Wait for both with timeout
                 try {
-                    lanThread.join(PING_TIMEOUT_LAN + 500);
-                    publicThread.join(PING_TIMEOUT_PUBLIC + 500);
-                } catch (InterruptedException e) { }
+                    String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                    String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
 
-                return new UrlResult(lanReachable.get(), publicReachable.get(), lanUrl, publicUrl);
+                    final AtomicBoolean lanReachable = new AtomicBoolean(false);
+                    final AtomicBoolean publicReachable = new AtomicBoolean(false);
+                    String lanHost = getHost(lanUrl);
+                    int lanPort = getPort(lanUrl);
+                    String publicHost = getHost(publicUrl);
+                    int publicPort = getPort(publicUrl);
+
+                    // Ping both LAN and public concurrently
+                    Thread lanThread = new Thread(() -> {
+                        try {
+                            lanReachable.set(pingHost(lanHost, lanPort, PING_TIMEOUT_LAN));
+                        } catch (Throwable t) { lanReachable.set(false); }
+                    });
+
+                    Thread publicThread = new Thread(() -> {
+                        try {
+                            publicReachable.set(pingHost(publicHost, publicPort, PING_TIMEOUT_PUBLIC));
+                        } catch (Throwable t) { publicReachable.set(false); }
+                    });
+
+                    lanThread.start();
+                    publicThread.start();
+
+                    // Wait for both with timeout
+                    try {
+                        lanThread.join(PING_TIMEOUT_LAN + 500);
+                        publicThread.join(PING_TIMEOUT_PUBLIC + 500);
+                    } catch (InterruptedException e) { }
+
+                    return new UrlResult(lanReachable.get(), publicReachable.get(), lanUrl, publicUrl);
+                } catch (Throwable t) {
+                    // Fallback: treat as unreachable
+                    String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                    String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
+                    return new UrlResult(false, false, lanUrl, publicUrl);
+                }
             }
 
             @Override
             protected void onPostExecute(UrlResult result) {
+                if (isFinishing()) return;
                 String targetUrl;
                 boolean usedPublic;
 
@@ -177,9 +189,20 @@ public class MainActivity extends Activity {
                     return;
                 }
 
+                if (targetUrl == null || targetUrl.isEmpty()) {
+                    if (finalShowToast) showToast("URL 无效，正在打开设置...");
+                    openSettings();
+                    return;
+                }
+
                 currentActiveUrl = targetUrl;
                 isCurrentUrlPublic = usedPublic;
-                webView.loadUrl(targetUrl);
+                try {
+                    webView.loadUrl(targetUrl);
+                } catch (Throwable t) {
+                    if (finalShowToast) showToast("加载失败，正在打开设置...");
+                    openSettings();
+                }
             }
         }.execute();
     }
