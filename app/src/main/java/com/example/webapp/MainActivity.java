@@ -186,21 +186,22 @@ public class MainActivity extends Activity {
                 isCurrentUrlPublic = usedPublic;
                 webView.loadUrl(targetUrl);
             }
-
-            private class UrlResult {
-                boolean lanReachable;
-                boolean publicReachable;
-                String lanUrl;
-                String publicUrl;
-
-                UrlResult(boolean lanReach, boolean pubReach, String lanUrlStr, String pubUrlStr) {
-                    this.lanReachable = lanReach;
-                    this.publicReachable = pubReach;
-                    this.lanUrl = lanUrlStr;
-                    this.publicUrl = pubUrlStr;
-                }
-            }
         }.execute();
+    }
+
+    // URL detection result holder
+    private static class UrlResult {
+        boolean lanReachable;
+        boolean publicReachable;
+        String lanUrl;
+        String publicUrl;
+
+        UrlResult(boolean lanReach, boolean pubReach, String lanUrlStr, String pubUrlStr) {
+            this.lanReachable = lanReach;
+            this.publicReachable = pubReach;
+            this.lanUrl = lanUrlStr;
+            this.publicUrl = pubUrlStr;
+        }
     }
 
     private void showToast(final String msg) {
