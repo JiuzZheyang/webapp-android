@@ -193,11 +193,11 @@ public class MainActivity extends Activity {
                 String lanUrl;
                 String publicUrl;
 
-                UrlResult(boolean lan, boolean pub, String lan, String pubUrl) {
-                    this.lanReachable = lan;
-                    this.publicReachable = pub;
-                    this.lanUrl = lan;
-                    this.publicUrl = pubUrl;
+                UrlResult(boolean lanReach, boolean pubReach, String lanUrlStr, String pubUrlStr) {
+                    this.lanReachable = lanReach;
+                    this.publicReachable = pubReach;
+                    this.lanUrl = lanUrlStr;
+                    this.publicUrl = pubUrlStr;
                 }
             }
         }.execute();
@@ -814,7 +814,7 @@ public class MainActivity extends Activity {
             webView.reload();
             return true;
         } else if (id == R.id.action_home) {
-            detectAndLoadUrl();
+            detectAndLoadUrl(true);
             return true;
         }
         return super.onOptionsItemSelected(item);
