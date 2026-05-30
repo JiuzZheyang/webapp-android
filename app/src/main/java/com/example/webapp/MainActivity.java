@@ -1,26 +1,31 @@
 package com.example.webapp;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
-import android.database.Cursor;
 import android.graphics.Bitmap;
-import android.net.Uri;
 import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.Uri;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Bundle;
+import android.webkit.CookieSyncManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.ProgressBar;
-import android.webkit.ValueCallback;
+import android.widget.Toast;
 import android.view.Menu;
 import android.view.MenuItem;
-import android.webkit.CookieSyncManager;
-import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -31,6 +36,8 @@ import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.URL;
 import java.util.UUID;
 
@@ -45,12 +52,20 @@ public class MainActivity extends Activity {
     private static final String DEFAULT_PUBLIC_URL = "";
     private static final String STATE_FILE = "webview_state.dat";
     private static final int REQUEST_FILE = 100;
-    private static final int CHUNK_SIZE = 512 * 1024; // 512KB
+    private static final int CHUNK_SIZE = 512 * 1024;
+
     private ValueCallback<Uri> mUploadMessage;
     private String pendingUploadFileName;
     private String pendingUploadMimeType;
     private String pendingUploadDeviceId;
     private String pendingUploadDeviceName;
+
+    private String currentActiveUrl = null;
+    private boolean isCurrentUrlPublic = false;
+    private volatile boolean isChangingUrl = false;
+    private boolean isFirstLoad = true;
+
+    private BroadcastReceiver networkReceiver = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -63,70 +78,152 @@ public class MainActivity extends Activity {
         progressBar = findViewById(R.id.progressBar);
 
         setupWebView();
-
-        // Detect network and load appropriate URL
         detectAndLoadUrl();
+        registerNetworkCallback();
+    }
+
+    private void registerNetworkCallback() {
+        networkReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                if (!isChangingUrl) {
+                    isFirstLoad = false;
+                    detectAndLoadUrl();
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(networkReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(networkReceiver, filter);
+        }
+    }
+
+    private boolean isNetworkAvailable() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Network network = cm.getActiveNetwork();
+            if (network == null) return false;
+            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+            return caps != null && (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+                                     caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+                                     caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET));
+        } else {
+            NetworkInfo activeNet = cm.getActiveNetworkInfo();
+            return activeNet != null && activeNet.isConnected();
+        }
+    }
+
+    private boolean isWifiConnected() {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (cm == null) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Network network = cm.getActiveNetwork();
+            if (network == null) return false;
+            NetworkCapabilities caps = cm.getNetworkCapabilities(network);
+            return caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+        } else {
+            NetworkInfo activeNet = cm.getActiveNetworkInfo();
+            return activeNet != null && activeNet.getType() == ConnectivityManager.TYPE_WIFI && activeNet.isConnected();
+        }
     }
 
     private void detectAndLoadUrl() {
+        if (!isNetworkAvailable()) {
+            Toast.makeText(this, "无网络连接，尝试加载本地配置...", Toast.LENGTH_LONG).show();
+            currentActiveUrl = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+            if (!currentActiveUrl.endsWith("/")) currentActiveUrl += "/";
+            isCurrentUrlPublic = false;
+            webView.loadUrl(currentActiveUrl);
+            return;
+        }
+
         new AsyncTask<Void, Void, String>() {
+            private boolean usedPublic = false;
+
             @Override
             protected String doInBackground(Void... voids) {
                 String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
                 String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
-
-                // Check current network type
-                ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
-                NetworkInfo activeNet = cm.getActiveNetworkInfo();
-                boolean isWifi = activeNet != null && activeNet.getType() == ConnectivityManager.TYPE_WIFI;
+                boolean isWifi = isWifiConnected();
 
                 if (isWifi) {
-                    // On WiFi: try LAN first, then public
-                    if (!lanUrl.isEmpty() && isPortReachable(lanUrl.split(":")[0], lanUrl.contains(":") ? Integer.parseInt(lanUrl.split(":")[1]) : 80, 500)) {
-                        return "http://" + lanUrl;
+                    if (!lanUrl.isEmpty() && pingHost(getHost(lanUrl), getPort(lanUrl), 1000)) {
+                        return makeUrl(lanUrl);
                     }
-                    if (!publicUrl.isEmpty() && isPortReachable(publicUrl.split(":")[0], publicUrl.contains(":") ? Integer.parseInt(publicUrl.split(":")[1]) : 80, 500)) {
-                        String url = "http://" + publicUrl;
-                        if (!url.endsWith("/")) url += "/";
-                        return url;
+                    if (!publicUrl.isEmpty() && pingHost(getHost(publicUrl), getPort(publicUrl), 1500)) {
+                        usedPublic = true;
+                        return makeUrl(publicUrl);
                     }
-                    // LAN not reachable, use it anyway (will show error in WebView)
-                    return "http://" + lanUrl;
+                    return makeUrl(lanUrl);
                 } else {
-                    // Not WiFi (mobile/other): try public first, then LAN
-                    if (!publicUrl.isEmpty() && isPortReachable(publicUrl.split(":")[0], publicUrl.contains(":") ? Integer.parseInt(publicUrl.split(":")[1]) : 80, 500)) {
-                        String url = "http://" + publicUrl;
-                        if (!url.endsWith("/")) url += "/";
-                        return url;
+                    if (!publicUrl.isEmpty() && pingHost(getHost(publicUrl), getPort(publicUrl), 1500)) {
+                        usedPublic = true;
+                        return makeUrl(publicUrl);
                     }
-                    if (!lanUrl.isEmpty() && isPortReachable(lanUrl.split(":")[0], lanUrl.contains(":") ? Integer.parseInt(lanUrl.split(":")[1]) : 80, 500)) {
-                        return "http://" + lanUrl;
+                    if (!lanUrl.isEmpty() && pingHost(getHost(lanUrl), getPort(lanUrl), 1000)) {
+                        return makeUrl(lanUrl);
                     }
-                    // Nothing reachable, try public if configured
                     if (!publicUrl.isEmpty()) {
-                        String url = "http://" + publicUrl;
-                        if (!url.endsWith("/")) url += "/";
-                        return url;
+                        usedPublic = true;
+                        return makeUrl(publicUrl);
                     }
-                    return "http://" + lanUrl;
+                    return makeUrl(lanUrl);
                 }
+            }
+
+            private String makeUrl(String url) {
+                if (!url.endsWith("/")) url += "/";
+                return url;
+            }
+
+            private String getHost(String url) {
+                return url.contains(":") ? url.split(":")[0] : url;
+            }
+
+            private int getPort(String url) {
+                if (!url.contains(":")) return 80;
+                try { return Integer.parseInt(url.split(":")[1]); } catch (Exception e) { return 80; }
+            }
+
+            private boolean pingHost(String host, int port, int timeoutMs) {
+                try {
+                    HttpURLConnection conn = (HttpURLConnection) new URL("http://" + host + ":" + port + "/").openConnection();
+                    conn.setRequestMethod("HEAD");
+                    conn.setConnectTimeout(timeoutMs);
+                    conn.setReadTimeout(timeoutMs);
+                    conn.setInstanceFollowRedirects(false);
+                    try {
+                        int responseCode = conn.getResponseCode();
+                        conn.disconnect();
+                        return responseCode >= 200 && responseCode < 500;
+                    } catch (Exception e) {
+                        conn.disconnect();
+                    }
+                } catch (Exception e) { }
+                try {
+                    Socket socket = new Socket();
+                    socket.connect(new InetSocketAddress(host, port), timeoutMs);
+                    socket.close();
+                    return true;
+                } catch (Exception e) { return false; }
             }
 
             @Override
             protected void onPostExecute(String url) {
                 if (!url.endsWith("/")) url += "/";
-                webView.loadUrl(url);
-            }
+                currentActiveUrl = url;
+                isCurrentUrlPublic = usedPublic;
 
-            private boolean isPortReachable(String host, int port, int timeoutMs) {
-                try {
-                    java.net.Socket socket = new java.net.Socket();
-                    socket.connect(new java.net.InetSocketAddress(host, port), timeoutMs);
-                    socket.close();
-                    return true;
-                } catch (Exception e) {
-                    return false;
+                if (!isFirstLoad) {
+                    String networkType = isWifiConnected() ? "WiFi" : "移动数据";
+                    String serverType = isCurrentUrlPublic ? "公网" : "局域网";
+                    Toast.makeText(MainActivity.this, "已切换到 " + networkType + " → " + serverType, Toast.LENGTH_SHORT).show();
                 }
+
+                webView.loadUrl(url);
             }
         }.execute();
     }
@@ -139,18 +236,13 @@ public class MainActivity extends Activity {
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
                 if (progressBar != null) progressBar.setVisibility(ProgressBar.VISIBLE);
-                // Get device info from localStorage for upload
                 webView.evaluateJavascript(
                     "localStorage.getItem('tiez_device_id') || ('m-' + Math.random().toString(36).substr(2, 9))",
-                    value -> {
-                        pendingUploadDeviceId = value.replace("\"", "");
-                    }
+                    value -> { pendingUploadDeviceId = value.replace("\"", ""); }
                 );
                 webView.evaluateJavascript(
                     "localStorage.getItem('tiez_device_name') || 'Mobile'",
-                    value -> {
-                        pendingUploadDeviceName = value.replace("\"", "");
-                    }
+                    value -> { pendingUploadDeviceName = value.replace("\"", ""); }
                 );
             }
 
@@ -160,6 +252,89 @@ public class MainActivity extends Activity {
                 if (progressBar != null) progressBar.setVisibility(ProgressBar.GONE);
                 injectFilePicker();
             }
+
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                super.onReceivedError(view, errorCode, description, failingUrl);
+                if (errorCode == WebViewClient.ERROR_HOST_LOOKUP ||
+                    errorCode == WebViewClient.ERROR_CONNECT ||
+                    errorCode == WebViewClient.ERROR_TIMEOUT) {
+                    tryAlternateUrl();
+                }
+            }
+
+            private void tryAlternateUrl() {
+                if (isChangingUrl) return;
+                isChangingUrl = true;
+
+                new AsyncTask<Void, Void, String>() {
+                    @Override
+                    protected String doInBackground(Void... voids) {
+                        String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
+                        String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
+
+                        if (!isCurrentUrlPublic && !publicUrl.isEmpty()) {
+                            if (pingHost(getHost(publicUrl), getPort(publicUrl), 1500)) {
+                                return makeUrl(publicUrl) + "|public";
+                            }
+                        }
+                        if (isCurrentUrlPublic && !lanUrl.isEmpty()) {
+                            if (pingHost(getHost(lanUrl), getPort(lanUrl), 1000)) {
+                                return makeUrl(lanUrl) + "|lan";
+                            }
+                        }
+                        return null;
+                    }
+
+                    private String makeUrl(String url) {
+                        if (!url.endsWith("/")) url += "/";
+                        return url;
+                    }
+
+                    private String getHost(String url) {
+                        return url.contains(":") ? url.split(":")[0] : url;
+                    }
+
+                    private int getPort(String url) {
+                        if (!url.contains(":")) return 80;
+                        try { return Integer.parseInt(url.split(":")[1]); } catch (Exception e) { return 80; }
+                    }
+
+                    private boolean pingHost(String host, int port, int timeoutMs) {
+                        try {
+                            HttpURLConnection conn = (HttpURLConnection) new URL("http://" + host + ":" + port + "/").openConnection();
+                            conn.setRequestMethod("HEAD");
+                            conn.setConnectTimeout(timeoutMs);
+                            conn.setReadTimeout(timeoutMs);
+                            conn.setInstanceFollowRedirects(false);
+                            try {
+                                int responseCode = conn.getResponseCode();
+                                conn.disconnect();
+                                return responseCode >= 200 && responseCode < 500;
+                            } catch (Exception e) { conn.disconnect(); }
+                        } catch (Exception e) { }
+                        try {
+                            Socket socket = new Socket();
+                            socket.connect(new InetSocketAddress(host, port), timeoutMs);
+                            socket.close();
+                            return true;
+                        } catch (Exception e) { return false; }
+                    }
+
+                    @Override
+                    protected void onPostExecute(String result) {
+                        isChangingUrl = false;
+                        if (result != null) {
+                            boolean wasPublic = result.endsWith("|public");
+                            String url = result.replace("|public", "").replace("|lan", "");
+                            currentActiveUrl = url;
+                            isCurrentUrlPublic = wasPublic;
+                            webView.loadUrl(url);
+                            Toast.makeText(MainActivity.this, "连接失败，自动切换到: " + (wasPublic ? "公网" : "局域网"), Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                }.execute();
+            }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
@@ -168,9 +343,7 @@ public class MainActivity extends Activity {
                 super.onProgressChanged(view, newProgress);
                 if (progressBar != null) {
                     progressBar.setProgress(newProgress);
-                    if (newProgress == 100) {
-                        progressBar.setVisibility(ProgressBar.GONE);
-                    }
+                    if (newProgress == 100) progressBar.setVisibility(ProgressBar.GONE);
                 }
             }
 
@@ -213,7 +386,6 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setDatabasePath(getFilesDir().getPath() + "/webview/");
 
-        // Handle downloads via Android DownloadManager
         webView.setDownloadListener(new android.webkit.DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimeType, long contentLength) {
@@ -263,18 +435,16 @@ public class MainActivity extends Activity {
             "}" +
             "setupFileInputs();" +
             "setInterval(setupFileInputs, 1000);" +
-            "" +
-            "  // Intercept download links" +
-            "  document.addEventListener('click', function(e) {" +
-            "    var a = e.target.closest('a');" +
-            "    if (a && a.href && a.href.match(/\\.(pdf|zip|doc|docx|xls|xlsx|ppt|pptx|txt|jpg|jpeg|png|gif|mp3|mp4|avi|mkv|apk)$/i)) {" +
-            "      e.preventDefault();" +
-            "      e.stopPropagation();" +
-            "      var fileName = a.download || a.href.split('/').pop();" +
-            "      window.Android.downloadFile(a.href, fileName, '');" +
-            "      return false;" +
-            "    }" +
-            "  });" +
+            "document.addEventListener('click', function(e) {" +
+            "  var a = e.target.closest('a');" +
+            "  if (a && a.href && a.href.match(/\\.(pdf|zip|doc|docx|xls|xlsx|ppt|pptx|txt|jpg|jpeg|png|gif|mp3|mp4|avi|mkv|apk)$/i)) {" +
+            "    e.preventDefault();" +
+            "    e.stopPropagation();" +
+            "    var fileName = a.download || a.href.split('/').pop();" +
+            "    window.Android.downloadFile(a.href, fileName, '');" +
+            "    return false;" +
+            "  }" +
+            "});" +
             "})();";
 
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
@@ -319,29 +489,24 @@ public class MainActivity extends Activity {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    // Validate and fix URL
                     if (url == null || url.trim().isEmpty()) {
                         Toast.makeText(MainActivity.this, "无效的下载链接", Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    // Skip blob/data URLs - these need different handling
                     if (url.startsWith("blob:") || url.startsWith("data:")) {
                         Toast.makeText(MainActivity.this, "此类型下载暂不支持，请在网页中长按保存", Toast.LENGTH_LONG).show();
                         return;
                     }
-                    // Make absolute - use separate variable to avoid reassigning parameter
                     String absUrl = url;
                     if (absUrl.startsWith("//")) {
                         absUrl = "https:" + absUrl;
                     } else if (absUrl.startsWith("/")) {
-                        String base = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-                        absUrl = base + absUrl;
+                        absUrl = currentActiveUrl + absUrl.substring(1);
                     } else if (!absUrl.startsWith("http://") && !absUrl.startsWith("https://")) {
-                        absUrl = "http://" + prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL) + "/" + absUrl;
+                        absUrl = currentActiveUrl + absUrl;
                     }
                     final String finalUrl = absUrl;
                     final String finalName = (fileName != null && !fileName.isEmpty()) ? fileName : "download_file";
-                    // Use DownloadManager for reliable download
                     try {
                         android.app.DownloadManager dm = (android.app.DownloadManager) getSystemService(DOWNLOAD_SERVICE);
                         android.app.DownloadManager.Request req = new android.app.DownloadManager.Request(Uri.parse(finalUrl));
@@ -355,7 +520,6 @@ public class MainActivity extends Activity {
                         dm.enqueue(req);
                         Toast.makeText(MainActivity.this, "开始下载: " + finalName, Toast.LENGTH_SHORT).show();
                     } catch (Exception e) {
-                        // Fallback: try intent-based download
                         try {
                             android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(finalUrl));
                             startActivity(intent);
@@ -387,23 +551,20 @@ public class MainActivity extends Activity {
         @Override
         protected String doInBackground(Void... voids) {
             try {
-                // Get base URL from settings (prefer LAN for upload)
                 String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
                 String uploadUrl = "http://" + lanUrl + "/upload-chunk";
 
-                // Get file size
                 InputStream inputStream = getContentResolver().openInputStream(fileUri);
                 if (inputStream == null) return "Cannot open file";
-                
+
                 byte[] fileData = new byte[inputStream.available()];
                 inputStream.read(fileData);
                 inputStream.close();
-                
+
                 int fileSize = fileData.length;
                 totalChunks = (int) Math.ceil((double) fileSize / CHUNK_SIZE);
                 String uploadId = UUID.randomUUID().toString();
 
-                // Upload each chunk
                 for (int i = 0; i < totalChunks; i++) {
                     int start = i * CHUNK_SIZE;
                     int end = Math.min(fileSize, start + CHUNK_SIZE);
@@ -413,7 +574,7 @@ public class MainActivity extends Activity {
 
                     String result = uploadChunk(uploadUrl, chunk, uploadId, i, totalChunks, fileName, fileSize, mimeType);
                     if (result == null) return "Upload failed at chunk " + i;
-                    
+
                     publishProgress((int) ((i + 1) * 100.0 / totalChunks));
                 }
 
@@ -423,21 +584,19 @@ public class MainActivity extends Activity {
             }
         }
 
-        private String uploadChunk(String urlStr, byte[] chunk, String uploadId, 
+        private String uploadChunk(String urlStr, byte[] chunk, String uploadId,
                 int chunkIndex, int totalChunks, String fileName, int totalSize, String contentType) {
             try {
                 String boundary = "----WebKitFormBoundary" + UUID.randomUUID().toString().substring(0, 16);
-                
+
                 java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-                
-                // File part
+
                 baos.write(("--" + boundary + "\r\n").getBytes());
                 baos.write(("Content-Disposition: form-data; name=\"file\"; filename=\"chunk.bin\"\r\n").getBytes());
                 baos.write("Content-Type: application/octet-stream\r\n\r\n".getBytes());
                 baos.write(chunk);
                 baos.write("\r\n".getBytes());
-                
-                // Metadata part
+
                 String metadata = String.format(
                     "{\"upload_id\":\"%s\",\"chunk_index\":%d,\"total_chunks\":%d,\"file_name\":\"%s\",\"sender_id\":\"%s\",\"sender_name\":\"%s\",\"total_size\":%d,\"content_type\":\"%s\"}",
                     uploadId, chunkIndex, totalChunks, fileName, deviceId, deviceName, totalSize, contentType
@@ -454,7 +613,7 @@ public class MainActivity extends Activity {
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
                 conn.setRequestProperty("Content-Length", String.valueOf(baos.size()));
-                
+
                 OutputStream os = conn.getOutputStream();
                 os.write(baos.toByteArray());
                 os.flush();
@@ -490,8 +649,7 @@ public class MainActivity extends Activity {
         protected void onPostExecute(String result) {
             super.onPostExecute(result);
             Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
-            
-            // Inject message into webpage chat
+
             final String finalFileName = fileName;
             String injectJs = String.format(
                 "(function() { " +
@@ -516,7 +674,7 @@ public class MainActivity extends Activity {
                 "})();",
                 mimeType, mimeType, finalFileName, finalFileName, finalFileName
             );
-            
+
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.KITKAT) {
                 webView.evaluateJavascript(injectJs, null);
             } else {
@@ -547,10 +705,9 @@ public class MainActivity extends Activity {
                 return;
             }
 
-            // Get file name and mime type
             String fileName = "file";
             String mimeType = "*/*";
-            
+
             android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null);
             if (cursor != null && cursor.moveToFirst()) {
                 int nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
@@ -559,11 +716,10 @@ public class MainActivity extends Activity {
                 }
                 cursor.close();
             }
-            
+
             mimeType = getContentResolver().getType(uri);
             if (mimeType == null) mimeType = "*/*";
 
-            // Get device info
             if (pendingUploadDeviceId == null || pendingUploadDeviceId.isEmpty()) {
                 pendingUploadDeviceId = "m-" + UUID.randomUUID().toString().substring(0, 9);
             }
@@ -571,13 +727,11 @@ public class MainActivity extends Activity {
                 pendingUploadDeviceName = "Android";
             }
 
-            // Use native upload instead of WebView callback
             if (mUploadMessage != null) {
                 mUploadMessage.onReceiveValue(uri);
                 mUploadMessage = null;
             }
 
-            // Start native chunked upload
             new ChunkedUploadTask(uri, fileName, mimeType, pendingUploadDeviceId, pendingUploadDeviceName).execute();
         }
     }
@@ -585,7 +739,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
-        // Save WebView state before leaving
         saveWebViewState(webView.getUrl(), 0);
         CookieSyncManager.getInstance().sync();
     }
@@ -656,10 +809,19 @@ public class MainActivity extends Activity {
             webView.reload();
             return true;
         } else if (id == R.id.action_home) {
-            // Re-detect network and load appropriate URL
             detectAndLoadUrl();
             return true;
         }
         return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (networkReceiver != null) {
+            try {
+                unregisterReceiver(networkReceiver);
+            } catch (Exception e) { }
+        }
     }
 }
