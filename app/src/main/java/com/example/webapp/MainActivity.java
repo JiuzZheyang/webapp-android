@@ -126,25 +126,20 @@ public class MainActivity extends Activity {
                 String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
                 String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
 
-                boolean lanReachable = false;
-                boolean publicReachable = false;
+                final AtomicBoolean lanReachable = new AtomicBoolean(false);
+                final AtomicBoolean publicReachable = new AtomicBoolean(false);
                 String lanHost = getHost(lanUrl);
                 int lanPort = getPort(lanUrl);
                 String publicHost = getHost(publicUrl);
                 int publicPort = getPort(publicUrl);
 
                 // Ping both LAN and public concurrently using threads
-                final AtomicBoolean lanDone = new AtomicBoolean(false);
-                final AtomicBoolean publicDone = new AtomicBoolean(false);
-
                 Thread lanThread = new Thread(() -> {
-                    lanReachable = pingHost(lanHost, lanPort, PING_TIMEOUT_LAN);
-                    lanDone.set(true);
+                    lanReachable.set(pingHost(lanHost, lanPort, PING_TIMEOUT_LAN));
                 });
 
                 Thread publicThread = new Thread(() -> {
-                    publicReachable = pingHost(publicHost, publicPort, PING_TIMEOUT_PUBLIC);
-                    publicDone.set(true);
+                    publicReachable.set(pingHost(publicHost, publicPort, PING_TIMEOUT_PUBLIC));
                 });
 
                 lanThread.start();
@@ -156,7 +151,7 @@ public class MainActivity extends Activity {
                     publicThread.join(PING_TIMEOUT_PUBLIC + 500);
                 } catch (InterruptedException e) { }
 
-                return new UrlResult(lanReachable, publicReachable, lanUrl, publicUrl);
+                return new UrlResult(lanReachable.get(), publicReachable.get(), lanUrl, publicUrl);
             }
 
             @Override
