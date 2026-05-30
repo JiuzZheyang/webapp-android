@@ -69,6 +69,7 @@ public class MainActivity extends Activity {
     private boolean isFirstLoad = true;
 
     private BroadcastReceiver networkReceiver = null;
+    private boolean isManualRefresh = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -81,7 +82,7 @@ public class MainActivity extends Activity {
         progressBar = findViewById(R.id.progressBar);
 
         setupWebView();
-        detectAndLoadUrl();
+        detectAndLoadUrl(false); // 首次加载不显示Toast
         registerNetworkCallback();
     }
 
@@ -89,10 +90,8 @@ public class MainActivity extends Activity {
         networkReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                if (!isChangingUrl) {
-                    isFirstLoad = false;
-                    detectAndLoadUrl();
-                }
+                // 网络变化时不再自动切换，让用户手动刷新
+                // 避免 WiFi/移动数据切换时频繁检测导致不稳定
             }
         };
         IntentFilter filter = new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION);
@@ -119,7 +118,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void detectAndLoadUrl() {
+    private void detectAndLoadUrl(boolean showToast) {
+        final boolean finalShowToast = showToast;
         new AsyncTask<Void, Void, UrlResult>() {
             @Override
             protected UrlResult doInBackground(Void... voids) {
@@ -165,23 +165,19 @@ public class MainActivity extends Activity {
                 boolean usedPublic;
 
                 if (result.lanReachable && !result.publicReachable) {
-                    // Only LAN is reachable
                     targetUrl = makeUrl(result.lanUrl);
                     usedPublic = false;
-                    showToast("局域网可用");
+                    if (finalShowToast) showToast("局域网可达，使用局域网");
                 } else if (!result.lanReachable && result.publicReachable) {
-                    // Only public is reachable
                     targetUrl = makeUrl(result.publicUrl);
                     usedPublic = true;
-                    showToast("公网可用");
+                    if (finalShowToast) showToast("公网可达，使用公网");
                 } else if (result.lanReachable && result.publicReachable) {
-                    // Both reachable - prefer LAN
                     targetUrl = makeUrl(result.lanUrl);
                     usedPublic = false;
-                    showToast("局域网、公网均可用（使用局域网）");
+                    if (finalShowToast) showToast("两者均可达，优先使用局域网");
                 } else {
-                    // Neither reachable - go to settings
-                    showToast("无法连接服务器，正在打开设置...");
+                    if (finalShowToast) showToast("无法连接服务器，正在打开设置...");
                     openSettings();
                     return;
                 }
@@ -246,28 +242,15 @@ public class MainActivity extends Activity {
 
     private boolean pingHost(String host, int port, int timeoutMs) {
         if (host == null || host.isEmpty() || port <= 0) return false;
-        try {
-            // Try HTTP HEAD first
-            HttpURLConnection conn = (HttpURLConnection) new URL("http://" + host + ":" + port + "/").openConnection();
-            conn.setRequestMethod("HEAD");
-            conn.setConnectTimeout(timeoutMs);
-            conn.setReadTimeout(timeoutMs);
-            conn.setInstanceFollowRedirects(false);
-            try {
-                int responseCode = conn.getResponseCode();
-                conn.disconnect();
-                return responseCode >= 200 && responseCode < 500;
-            } catch (Exception e) {
-                conn.disconnect();
-            }
-        } catch (Exception e) { }
-        // Fallback to socket test
+        // 直接使用 Socket 连接检测，不走 HTTP 协议，避免重定向/代理问题
         try {
             Socket socket = new Socket();
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
             socket.close();
             return true;
-        } catch (Exception e) { return false; }
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void setupWebView() {
@@ -562,8 +545,19 @@ public class MainActivity extends Activity {
         @Override
         protected String doInBackground(Void... voids) {
             try {
+                // 根据当前网络状态选择上传地址
                 String lanUrl = prefs.getString(KEY_LAN_URL, DEFAULT_LAN_URL);
-                String uploadUrl = "http://" + lanUrl + "/upload-chunk";
+                String publicUrl = prefs.getString(KEY_PUBLIC_URL, DEFAULT_PUBLIC_URL);
+                String uploadUrl;
+
+                // 如果当前使用公网或有公网地址且可达，优先使用公网上传
+                if (isCurrentUrlPublic) {
+                    uploadUrl = "http://" + publicUrl + "/upload-chunk";
+                } else if (!publicUrl.isEmpty() && pingHost(getHost(publicUrl), getPort(publicUrl), PING_TIMEOUT_PUBLIC)) {
+                    uploadUrl = "http://" + publicUrl + "/upload-chunk";
+                } else {
+                    uploadUrl = "http://" + lanUrl + "/upload-chunk";
+                }
 
                 InputStream inputStream = getContentResolver().openInputStream(fileUri);
                 if (inputStream == null) return "Cannot open file";
